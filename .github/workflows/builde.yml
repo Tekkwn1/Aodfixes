@@ -1,0 +1,156 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+      - name: Generate project
+        run: |
+          set -e
+          mkdir -p stub/src/main/java/de/robv/android/xposed/callbacks app/src/main/java/com/bricko/aodfix app/src/main/res/values app/src/main/assets
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = 'AodFix'
+          include ':app', ':stub'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          EOF
+          cat > stub/build.gradle <<'EOF'
+          plugins { id 'java-library' }
+          java { sourceCompatibility = JavaVersion.VERSION_1_8; targetCompatibility = JavaVersion.VERSION_1_8 }
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+              namespace 'com.bricko.aodfix'
+              compileSdk 34
+              defaultConfig { applicationId 'com.bricko.aodfix'; minSdk 26; targetSdk 34; versionCode 1; versionName '1.0' }
+              compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+          }
+          dependencies { compileOnly project(':stub') }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <application android:label="AOD Fullscreen Fix" android:allowBackup="false">
+                  <meta-data android:name="xposedmodule" android:value="true" />
+                  <meta-data android:name="xposeddescription" android:value="UN1CA FloatingFeatureHooks AOD_FULLSCREEN=0 zorlamasini 1 yapar" />
+                  <meta-data android:name="xposedminversion" android:value="82" />
+                  <meta-data android:name="xposedscope" android:resource="@array/xposed_scope" />
+              </application>
+          </manifest>
+          EOF
+          cat > app/src/main/res/values/arrays.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string-array name="xposed_scope">
+                  <item>android</item>
+                  <item>com.android.systemui</item>
+                  <item>com.android.settings</item>
+                  <item>com.samsung.android.app.aodservice</item>
+              </string-array>
+          </resources>
+          EOF
+          echo "com.bricko.aodfix.Hook" > app/src/main/assets/xposed_init
+          cat > app/src/main/java/com/bricko/aodfix/Hook.java <<'EOF'
+          package com.bricko.aodfix;
+          
+          import de.robv.android.xposed.IXposedHookLoadPackage;
+          import de.robv.android.xposed.XC_MethodHook;
+          import de.robv.android.xposed.XposedBridge;
+          import de.robv.android.xposed.XposedHelpers;
+          import de.robv.android.xposed.callbacks.XC_LoadPackage;
+          
+          public class Hook implements IXposedHookLoadPackage {
+              private static final String CLS = "com.samsung.android.feature.SemFloatingFeature";
+              private static final String KEY = "SEC_FLOATING_FEATURE_LCD_CONFIG_AOD_FULLSCREEN";
+          
+              @Override
+              public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lp) {
+                  try {
+                      XC_MethodHook h = new XC_MethodHook() {
+                          @Override
+                          protected void beforeHookedMethod(MethodHookParam p) {
+                              if (p.args != null && p.args.length > 0 && KEY.equals(p.args[0])) {
+                                  p.setResult(1);
+                              }
+                          }
+                      };
+                      XposedHelpers.findAndHookMethod(CLS, lp.classLoader, "getInt", String.class, h);
+                      XposedHelpers.findAndHookMethod(CLS, lp.classLoader, "getInt", String.class, int.class, h);
+                      XposedBridge.log("AodFix: hooked in " + lp.packageName);
+                  } catch (Throwable t) {
+                      XposedBridge.log("AodFix: " + lp.packageName + " -> " + t);
+                  }
+              }
+          }
+          EOF
+          cd stub/src/main/java/de/robv/android/xposed
+          cat > IXposedHookLoadPackage.java <<'EOF'
+          package de.robv.android.xposed;
+          import de.robv.android.xposed.callbacks.XC_LoadPackage;
+          public interface IXposedHookLoadPackage {
+              void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable;
+          }
+          EOF
+          cat > XC_MethodHook.java <<'EOF'
+          package de.robv.android.xposed;
+          import java.lang.reflect.Member;
+          public abstract class XC_MethodHook {
+              protected void beforeHookedMethod(MethodHookParam param) throws Throwable {}
+              protected void afterHookedMethod(MethodHookParam param) throws Throwable {}
+              public class Unhook {}
+              public static class MethodHookParam {
+                  public Member method;
+                  public Object thisObject;
+                  public Object[] args;
+                  public void setResult(Object result) {}
+                  public Object getResult() { return null; }
+              }
+          }
+          EOF
+          cat > XposedBridge.java <<'EOF'
+          package de.robv.android.xposed;
+          public final class XposedBridge {
+              public static void log(String text) {}
+              public static void log(Throwable t) {}
+          }
+          EOF
+          cat > XposedHelpers.java <<'EOF'
+          package de.robv.android.xposed;
+          public final class XposedHelpers {
+              public static XC_MethodHook.Unhook findAndHookMethod(String className, ClassLoader cl, String methodName, Object... parameterTypesAndCallback) { return null; }
+          }
+          EOF
+          cat > callbacks/XC_LoadPackage.java <<'EOF'
+          package de.robv.android.xposed.callbacks;
+          public abstract class XC_LoadPackage {
+              public static class LoadPackageParam {
+                  public String packageName;
+                  public String processName;
+                  public ClassLoader classLoader;
+                  public boolean isFirstApplication;
+              }
+          }
+          EOF
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aodfix-apk
+          path: app/build/outputs/apk/debug/*.apk
