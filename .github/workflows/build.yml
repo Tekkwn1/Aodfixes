@@ -39,7 +39,7 @@ jobs:
           android {
               namespace 'com.bricko.aodfix'
               compileSdk 34
-              defaultConfig { applicationId 'com.bricko.aodfix'; minSdk 26; targetSdk 34; versionCode 2; versionName '2.0' }
+              defaultConfig { applicationId 'com.bricko.aodfix'; minSdk 26; targetSdk 34; versionCode 3; versionName '3.0' }
               compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
           }
           dependencies { compileOnly project(':stub') }
@@ -71,6 +71,8 @@ jobs:
           package com.bricko.aodfix;
           
           import android.content.ContentResolver;
+          import android.content.Context;
+          import android.provider.Settings;
           import de.robv.android.xposed.IXposedHookLoadPackage;
           import de.robv.android.xposed.XC_MethodHook;
           import de.robv.android.xposed.XposedBridge;
@@ -81,7 +83,9 @@ jobs:
           public class Hook implements IXposedHookLoadPackage {
               private static final String CLS = "com.samsung.android.feature.SemFloatingFeature";
               private static final String KEY = "SEC_FLOATING_FEATURE_LCD_CONFIG_AOD_FULLSCREEN";
+              private static final String WALL = "aod_show_lockscreen_wallpaper";
               private static final String[] WORDS = {"aod", "always_on", "wallpaper"};
+              private static final String[] FF_WORDS = {"AOD", "WALLPAPER", "LOCKSCREEN", "SUBJECT", "SEGMENT", "CUTOUT", "MATTING"};
               private static final ConcurrentHashMap<String, String> SEEN = new ConcurrentHashMap<String, String>();
           
               private static void log(String pkg, String kind, String name, Object val) {
@@ -102,6 +106,25 @@ jobs:
                   return false;
               }
           
+              private static boolean ffInteresting(String k) {
+                  if (k == null) return false;
+                  for (String w : FF_WORDS) {
+                      if (k.contains(w)) return true;
+                  }
+                  return false;
+              }
+          
+              private static boolean wallpaperOn() {
+                  try {
+                      Object app = Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null);
+                      if (app == null) return true;
+                      ContentResolver cr = ((Context) app).getContentResolver();
+                      return Settings.System.getInt(cr, WALL, 1) != 0;
+                  } catch (Throwable t) {
+                      return true;
+                  }
+              }
+          
               private static void hook(String cls, ClassLoader cl, String method, Object... typesAndCb) {
                   try {
                       XposedHelpers.findAndHookMethod(cls, cl, method, typesAndCb);
@@ -118,15 +141,31 @@ jobs:
                   hookSettings(pkg, cl, "android.provider.Settings$System");
                   hookSettings(pkg, cl, "android.provider.Settings$Secure");
                   hookSettings(pkg, cl, "android.provider.Settings$Global");
-                  XposedBridge.log("AodFix: ready in " + pkg);
+                  XposedBridge.log("AodFix v3: ready in " + pkg);
               }
           
               private void hookFeature(final String pkg, ClassLoader cl) {
+                  // SystemUI: duvar kagidi ayari kapaliysa fullscreen=0 (UN1CA varsayilani). Diger surecler: hep 1.
+                  final boolean dynamic = "com.android.systemui".equals(pkg);
+          
                   XC_MethodHook force = new XC_MethodHook() {
                       @Override
                       protected void beforeHookedMethod(MethodHookParam p) {
                           if (p.args != null && p.args.length > 0 && KEY.equals(p.args[0])) {
-                              p.setResult(1);
+                              int v = 1;
+                              if (dynamic && !wallpaperOn()) v = 0;
+                              p.setResult(v);
+                          }
+                      }
+          
+                      @Override
+                      protected void afterHookedMethod(MethodHookParam p) {
+                          try {
+                              if (p.args != null && p.args.length > 0 && p.args[0] instanceof String) {
+                                  String k = (String) p.args[0];
+                                  if (ffInteresting(k)) log(pkg, "ff", k, p.getResult());
+                              }
+                          } catch (Throwable ignored) {
                           }
                       }
                   };
@@ -139,14 +178,12 @@ jobs:
                           try {
                               if (p.args != null && p.args.length > 0 && p.args[0] instanceof String) {
                                   String k = (String) p.args[0];
-                                  if (k.contains("AOD")) log(pkg, "ff", k, p.getResult());
+                                  if (ffInteresting(k)) log(pkg, "ff", k, p.getResult());
                               }
                           } catch (Throwable ignored) {
                           }
                       }
                   };
-                  hook(CLS, cl, "getInt", String.class, spy);
-                  hook(CLS, cl, "getInt", String.class, int.class, spy);
                   hook(CLS, cl, "getBoolean", String.class, spy);
                   hook(CLS, cl, "getBoolean", String.class, boolean.class, spy);
                   hook(CLS, cl, "getString", String.class, spy);
